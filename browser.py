@@ -1,6 +1,7 @@
 import socket
 import ssl
 import tkinter
+import tkinter.font
 
 class URL:
   # URL 파싱
@@ -61,33 +62,84 @@ class URL:
 
     return body;
 
-# 태그를 제외한 페이지의 모든 텍스트 반환
+class Text:
+  def __init__(self, text):
+    self.text = text
+  
+class Tag:
+  def __init__(self, tag):
+    self.tag = tag
+
+# 태그, 텍스트 반환
 def lex(body):
-  text = ""
+  out = []
+  buffer = ""
   in_tag = False
   for c in body:
     if c == "<":
       in_tag = True
+      if buffer: out.append(Text(buffer))
+      buffer = ""
     elif c == ">":
       in_tag = False
-    elif not in_tag:
-      text += c
-  return text
+      out.append(Tag(buffer))
+      buffer = ""
+    else:
+      buffer += c
+  if not in_tag and buffer:
+    out.append(Text(buffer))
+  return out
+
 
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 
-# 각 문자의 위치를 계산하고 저장 - 페이지 좌표로 작동
-def layout(text):
-  display_list = [] # 디스플레이 리스트: 화면에 그려야 할 요소의 집합
-  cursor_x, cursor_y = HSTEP, VSTEP
-  for c in text:
-    display_list.append((cursor_x, cursor_y, c))
-    cursor_x += HSTEP
-    if (cursor_x >= WIDTH-HSTEP):
-      cursor_y += VSTEP
-      cursor_x = HSTEP
-  return display_list
+class Layout:
+  def __init__(self, tokens):
+    self.display_list = []    
+    self.cursor_x = HSTEP
+    self.cursor_y = VSTEP
+    self.weight = "normal"
+    self.style = "roman"
+    self.size=12
+    for tok in tokens:
+      self.token(tok)
+
+  def word(self, word):
+    font = tkinter.font.Font(
+      size=self.size,
+      weight=self.weight,
+      slant=self.style
+    )
+    self.display_list.append(((self.cursor_x, self.cursor_y, word, font)))
+    w = font.measure(word)
+    self.cursor_x += w + font.measure(" ")
+    if (self.cursor_x + w >= WIDTH-HSTEP):
+      self.cursor_y += font.metrics("linespace") * 1.25 #1.25: line spacing
+      self.cursor_x = HSTEP
+    
+  def token(self, tok):
+    if isinstance(tok, Text):
+      for word in tok.text.split():
+        self.word(word)
+    elif tok.tag == "i":
+      self.style = "italic"
+    elif tok.tag == "/i":
+      self.style = "roman"
+    elif tok.tag == "b":
+      self.weight = "bold"
+    elif tok.tag == "/b":
+      self.weight = "normal"
+    elif tok.tag == "small":
+      self.size -=2
+    elif tok.tag == "/small":
+      self.size += 2
+    elif tok.tag == "big":
+      self.size += 4
+    elif tok.tag == "/big":
+      self.size -= 4
+
+    return self.display_list
 
 class Browser:
   def __init__(self):
@@ -104,16 +156,16 @@ class Browser:
   # 저장된 위치를 기반으로 각 문자를 그림 - 화면 좌표만 고려
   def draw(self):
     self.canvas.delete("all")
-    for x, y, c in self.display_list:
+    for x, y, word, font in self.display_list:
       if y > self.scroll + HEIGHT: continue # 창의 아래문자 건너뛰기
       if y + VSTEP < self.scroll: continue # 창의 위의 문자 건너뛰기
-      self.canvas.create_text(x, y-self.scroll, text=c)
+      self.canvas.create_text(x, y-self.scroll, text=word, anchor="nw")
 
   # 웹페이지 로드
   def load(self, url):
     body = url.request()
-    text = lex(body)
-    self.display_list = layout(text)
+    tokens = lex(body)
+    self.display_list = Layout(tokens).display_list
     self.draw()
 
   # 스크롤 
