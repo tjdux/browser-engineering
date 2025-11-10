@@ -94,29 +94,61 @@ def lex(body):
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
 
+SCROLL_STEP = 100
+
+FONTS = {}
+
+def get_font(size, weight, style):
+  key = (size, weight, style)
+  if key not in FONTS:
+    font = tkinter.Font.Font(size=size, weight=weight, slant=style)
+    label = tkinter.Label(font=font)
+    FONTS[key] = (font, label)
+  return FONTS[key][0]
+
 class Layout:
   def __init__(self, tokens):
-    self.display_list = []    
+    self.tokens = tokens
+    self.display_list = []   
+  
     self.cursor_x = HSTEP
     self.cursor_y = VSTEP
     self.weight = "normal"
     self.style = "roman"
     self.size=12
+
+    self.line = [] # 한 줄에 들어가는 글자들을 임시 저장하는 버퍼 
     for tok in tokens:
       self.token(tok)
+    self.flush()
 
   def word(self, word):
-    font = tkinter.font.Font(
-      size=self.size,
-      weight=self.weight,
-      slant=self.style
-    )
-    self.display_list.append(((self.cursor_x, self.cursor_y, word, font)))
+    font = get_font(self.size, self.weight, self.style)
     w = font.measure(word)
+    # 첫 번째 패스: 줄에 어떤 단어가 들어가는지 식별, x 위치 계산 
+    if self.cursor_x + w > WIDTH-HSTEP:
+      self.flush()
+    self.line.append(((self.cursor_x, word, font)))
     self.cursor_x += w + font.measure(" ")
     if (self.cursor_x + w >= WIDTH-HSTEP):
       self.cursor_y += font.metrics("linespace") * 1.25 #1.25: line spacing
       self.cursor_x = HSTEP
+
+  def flush(self):
+    # 기준선을 따라 단어들을 정렬
+    if not self.line: return
+    metrics = [font.metrics() for _, _,font in self.line]
+    max_ascent = max([metric["ascent"] for metric in metrics]) # 높이가 가장 높은 글자
+    baseline = self.cursor_y + 1.25 * max_ascent # 💡 더하는 이유: y좌표는 아래 방향으로 증가!
+    # 디스플레이 리스트에 모든 단어들을 추가
+    for x, word, font in self.line:
+      y = baseline - font.metrics("ascent")
+      self.display_list.append((x, y, word, font))
+    max_descent = max([metric["descent"] for metric in metrics])
+    # cursor_x와 cursor_y 필드를 업데이트 
+    self.cursor_y = baseline + 1.25 * max_descent
+    self.cursor_x = HSTEP
+    self.line = []
     
   def token(self, tok):
     if isinstance(tok, Text):
@@ -138,8 +170,11 @@ class Layout:
       self.size += 4
     elif tok.tag == "/big":
       self.size -= 4
-
-    return self.display_list
+    elif tok.tag == "br":
+      self.flush()
+    elif tok.tag == "/p":
+      self.flush()
+      self.cursor_y += VSTEP
 
 class Browser:
   def __init__(self):
@@ -170,7 +205,6 @@ class Browser:
 
   # 스크롤 
   def scrolldown(self, e):
-    SCROLL_STEP = 100
     self.scroll += SCROLL_STEP
     self.draw()
 
