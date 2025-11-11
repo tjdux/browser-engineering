@@ -63,33 +63,105 @@ class URL:
     return body;
 
 class Text:
-  def __init__(self, text):
+  def __init__(self, text, parent):
     self.text = text
-  
-class Tag:
-  def __init__(self, tag):
+    self.children = [] # 텍스트 노드에는 필요 없지만 일관성을 위해!
+    self.parent = parent
+
+  def __repr__(self):
+    return repr(self.text)
+
+class Element:
+  def __init__(self, tag, attributes, parent):
     self.tag = tag
+    self.attributes = attributes
+    self.children = [] 
+    self.parent = parent
 
-# 태그, 텍스트 반환
-def lex(body):
-  out = []
-  buffer = ""
-  in_tag = False
-  for c in body:
-    if c == "<":
-      in_tag = True
-      if buffer: out.append(Text(buffer))
-      buffer = ""
-    elif c == ">":
-      in_tag = False
-      out.append(Tag(buffer))
-      buffer = ""
-    else:
-      buffer += c
-  if not in_tag and buffer:
-    out.append(Text(buffer))
-  return out
+  def __repr__(self):
+    return f"<{self.tag}>"
 
+def print_tree(node, indent=0):
+  print(" " * indent, node)
+  for child in node.children:
+    print_tree(child, indent + 2)
+
+class HTMLParser:
+  # 분석 중인 소스 코드와 불완전 트리 저장
+  def __init__(self, body):
+    self.body = body
+    self.unfinished = [] # 첫 번째 노드: HTML 트리의 루트, 마지막 노드: 가장 최근 추가된 미완성 태그
+  
+  def parse(self):
+    text = ""
+    in_tag = False
+    for c in self.body:
+      if c == "<":
+        in_tag = True
+        if text: self.add_text(text)
+        text = ""
+      elif c == ">":
+        in_tag = False
+        self.add_tag(text)
+        text = ""
+      else:
+        text += c
+    if not in_tag and text:
+      self.add_text(text)
+    return self.finish()
+  
+  # 트리에 텍스트 노드 추가
+  def add_text(self, text):
+    if text.isspace(): return # 화이트스페이스만 있는 텍스트노드 건너뛰기
+    parent = self.unfinished[-1]
+    node = Text(text, parent)
+    parent.children.append(node)
+
+  SELF_CLOSING_TAGS = [
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr"
+  ]
+
+  # 어트리뷰트 처리
+  def get_attributes(self, text):
+    parts = text.split()
+    tag = parts[0].casefold()
+    attributes = {}
+    for attrpair in parts[1:]:
+      if "=" in attrpair:
+        key, value = attrpair.split("=", 1)
+        if len(value) > 2 and value[0] in ["'", "\""]:
+          value = value[1:-1]
+        attributes[key.casefold()] = value
+      else:
+        attributes[attrpair.casefold()] = ""
+    return tag, attributes
+
+  # 트리에 태그 노드 추가
+  def add_tag(self, tag):
+    tag, attributes = self.get_attributes(tag)
+    if tag.startswith("!"): return # doctype, 주석 버리기
+    if tag.startswith("/"):
+      if len(self.unfinished) == 1: return
+      node = self.unfinished.pop()
+      parent = self.unfinished[-1]
+      parent.children.append(node)
+    elif tag in self.SELF_CLOSING_TAGS:
+      parent = self.unfinished[-1]
+      node = Element(tag, attributes, parent)
+      parent.children.append(node)
+    else: 
+      parent = self.unfinished[-1] if self.unfinished else None
+      node = Element(tag, attributes, parent)
+      self.unfinished.append(node)
+    
+  # 파싱을 끝내면 미완성 노드를 모두 정리하여 불완전 트리를 완전 트리로
+  def finish(self):
+    while len(self.unfinished) > 1:
+      node = self.unfinished.pop()
+      parent = self.unfinished[-1]
+      parent.children.append(node)
+    return self.unfinished.pop()
 
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18
@@ -199,9 +271,8 @@ class Browser:
   # 웹페이지 로드
   def load(self, url):
     body = url.request()
-    tokens = lex(body)
-    self.display_list = Layout(tokens).display_list
-    self.draw()
+    nodes = HTMLParser(body).parse()
+    print_tree(nodes)
 
   # 스크롤 
   def scrolldown(self, e):
