@@ -204,44 +204,121 @@ def get_font(size, weight, style):
     FONTS[key] = (font, label)
   return FONTS[key][0]
 
-class Layout:
-  def __init__(self, tree):
-    self.display_list = []   
-  
-    self.cursor_x = HSTEP
-    self.cursor_y = VSTEP
-    self.weight = "normal"
-    self.style = "roman"
-    self.size=12
+# 레이아웃 트리의 루트 역할 
+class DocumentLayout:
+  def __init__(self, node):
+    self.node = node
+    self.parent = None
+    self.children = []
 
-    self.line = [] # 한 줄에 들어가는 글자들을 임시 저장하는 버퍼 
-    self.recurse(tree)
-    self.flush()
+    # 크기, 위치
+    self.x = None
+    self.y = None
+    self.width = None
+    self.height = None
+
+  def layout(self):
+    child = BlockLayout(self.node, self, None)
+    self.children.append(child)
+
+    self.width = WIDTH - 2*HSTEP
+    self.x = HSTEP
+    self.y = VSTEP
+
+    child.layout() # 트리 구축을 위해 재귀적 호출 
+    self.height = child.height
+
+  def paint(self):
+    return []
+
+BLOCK_ELEMENTS = [
+  "html", "body", "article", "section", "nav", "aside",
+  "h1", "h2", "h3", "h4", "h5", "h6", "hgroup", "header",
+  "footer", "address", "p", "hr", "pre", "blockquote",
+  "ol", "ul", "menu", "li", "dl", "dt", "dd", "figure",
+  "figcaption", "main", "div", "table", "form", "fieldset",
+  "legend", "details", "summary"
+]
+
+def paint_tree(layout_object, display_list):
+  display_list.extend(layout_object.paint())
+
+  for child in layout_object.children:
+    paint_tree(child, display_list)
+
+
+class BlockLayout:
+  def __init__(self, node, parent, previous):
+    # 트리로 만들기 위해 자식 포인터, 부모 포인터, 이전 형제에 대한 포인터 추가
+    self.node = node 
+    self.parent = parent
+    self.previous = previous
+    self.children = []
+    self.display_list = []
+
+    # 크기, 위치
+    self.x = None
+    self.y = None
+    self.width = None
+    self.height = None
+
+  def layout(self):
+    # 객체는 부모의 왼쪽 가장자리에서 시작하여 부모 엘리먼트를 채워감
+    if self.previous:
+      self.y = self.previous.y + self.previous.height
+    else:
+      self.y = self.parent.y
+    self.x = self.parent.x
+    self.width = self.parent.width
+
+    mode = self.layout_mode()
+    if mode == "block":
+      self.height = sum([
+        child.height for child in self.children
+      ])
+      previous = None
+      for child in self.node.children:
+        next = BlockLayout(child, self, previous)
+        self.children.append(next)
+        previous = next
+    else: 
+      self.display_list = []
+
+      self.cursor_x = 0
+      self.cursor_y = 0
+      self.weight = "normal"
+      self.style = "roman"
+      self.size = 12
+      self.height = self.cursor_y
+
+      self.line = []
+      self.recurse(self.node)
+      self.flush()
+
+    for child in self.children:
+      child.layout()
 
   def word(self, word):
     font = get_font(self.size, self.weight, self.style)
     w = font.measure(word)
     # 첫 번째 패스: 줄에 어떤 단어가 들어가는지 식별, x 위치 계산 
-    if self.cursor_x + w > WIDTH-HSTEP:
+    if self.cursor_x + w > self.width:
       self.flush()
     self.line.append(((self.cursor_x, word, font)))
     self.cursor_x += w + font.measure(" ")
 
-  def flush(self):
-    # 기준선을 따라 단어들을 정렬
-    if not self.line: return
-    metrics = [font.metrics() for _, _, font in self.line]
-    max_ascent = max([metric["ascent"] for metric in metrics]) # 높이가 가장 높은 글자
-    baseline = self.cursor_y + 1.25 * max_ascent # 💡 더하는 이유: y좌표는 아래 방향으로 증가!
-    # 디스플레이 리스트에 모든 단어들을 추가
-    for x, word, font in self.line:
-      y = baseline - font.metrics("ascent")
-      self.display_list.append((x, y, word, font))
-    max_descent = max([metric["descent"] for metric in metrics])
-    # cursor_x와 cursor_y 필드를 업데이트 
-    self.cursor_y = baseline + 1.25 * max_descent
-    self.cursor_x = HSTEP
-    self.line = []
+  # 텍스트 관련 태그인지 블록 태그인지 구분 
+  def layout_mode(self):
+    if isinstance(self.node, Text):
+      return "inline"
+    elif any([isinstance(child, Element) and \
+              child.tag in BLOCK_ELEMENTS
+              for child in self.node.children]):
+      return "block"
+    elif self.node.children:
+      return "inline"
+    else:
+      return "block"
 
   def recurse(self, tree):
     if isinstance(tree, Text):
@@ -252,6 +329,32 @@ class Layout:
       for child in tree.children:
         self.recurse(child)
       self.close_tag(tree.tag)
+
+  def layout_intermediate(self):
+    # node, child가 가리키는 HTML 트리와 self, previous, next가 가리키는 레이아웃 트리
+    # HTML 트리로 레이아웃 트리를 구축
+    previous = None
+    for child in self.node.children:
+      next = BlockLayout(child, self, previous)
+      self.children.append(next)
+      previous = next 
+
+  def flush(self):
+    # 기준선을 따라 단어들을 정렬
+    if not self.line: return
+    metrics = [font.metrics() for _, _, font in self.line]
+    max_ascent = max([metric["ascent"] for metric in metrics]) # 높이가 가장 높은 글자
+    baseline = self.cursor_y + 1.25 * max_ascent # 💡 더하는 이유: y좌표는 아래 방향으로 증가!
+    # 디스플레이 리스트에 모든 단어들을 추가
+    for rel_x, word, font in self.line:
+      x = self.x + rel_x
+      y = self.y + baseline - font.metrics("ascent")
+      self.display_list.append((x, y, word, font))
+    max_descent = max([metric["descent"] for metric in metrics])
+    # cursor_x와 cursor_y 필드를 업데이트 
+    self.cursor_y = baseline + 1.25 * max_descent
+    self.cursor_x = 0
+    self.line = []
 
   def open_tag(self, tag):
     if tag == "i":
@@ -278,6 +381,9 @@ class Layout:
       self.flush()
       self.cursor_y += VSTEP
 
+  def paint(self):
+    return self.display_list
+
 class Browser:
   def __init__(self):
     self.window = tkinter.Tk()
@@ -289,6 +395,8 @@ class Browser:
     self.scroll = 0 # 스크롤한 거리
     self.window.bind("<Down>", self.scrolldown) # bind
     self.canvas.pack()
+
+    self.display_list = []
 
   # 저장된 위치를 기반으로 각 문자를 그림 - 화면 좌표만 고려
   def draw(self):
@@ -302,7 +410,9 @@ class Browser:
   def load(self, url):
     body = url.request()
     self.nodes = HTMLParser(body).parse()
-    self.display_list = Layout(self.nodes).display_list
+    self.documnet = DocumentLayout(self.nodes) # 레이아웃 객체 생성
+    self.documnet.layout() # 레이아웃 수행 
+    paint_tree(self.documnet, self.display_list)
     self.draw()
 
   # 스크롤 
