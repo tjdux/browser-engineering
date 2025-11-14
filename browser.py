@@ -40,7 +40,7 @@ class URL:
     s.connect((self.host, self.port))
 
     # 요청 메시지 전송
-    request = f"GET {self.path} HTTP/1.1\r\n"
+    request = f"GET {self.path} HTTP/1.0\r\n"
     request += f"Host: {self.host}\r\n"
     request += "\r\n"
     s.send(request.encode("utf8"))
@@ -204,6 +204,38 @@ def get_font(size, weight, style):
     FONTS[key] = (font, label)
   return FONTS[key][0]
 
+class DrawText:
+  def __init__(self, x1, y1, text, font):
+    self.top = y1
+    self.left = x1
+    self.text = text
+    self.font = font
+    self.bottom = y1 + font.metrics("linespace")
+
+  def execute(self, scroll, canvas):
+    canvas.create_text(
+      self.left, self.top - scroll,
+      text=self.text,
+      font=self.font,
+      anchor="nw"
+    )
+
+class DrawRect:
+  def __init__(self, x1, y1, x2, y2, color):
+    self.top = y1
+    self.left = x1
+    self.bottom = y2
+    self.right = x2
+    self.color = color
+
+  def execute(self, scroll, canvas):
+    canvas.create_rectangle(
+      self.left, self.top-scroll,
+      self.right, self.bottom-scroll,
+      width=0, # 테두리 두께 0
+      fill=self.color
+    )
+
 # 레이아웃 트리의 루트 역할 
 class DocumentLayout:
   def __init__(self, node):
@@ -273,23 +305,17 @@ class BlockLayout:
 
     mode = self.layout_mode()
     if mode == "block":
-      self.height = sum([
-        child.height for child in self.children
-      ])
       previous = None
       for child in self.node.children:
         next = BlockLayout(child, self, previous)
         self.children.append(next)
         previous = next
     else: 
-      self.display_list = []
-
       self.cursor_x = 0
       self.cursor_y = 0
       self.weight = "normal"
       self.style = "roman"
       self.size = 12
-      self.height = self.cursor_y
 
       self.line = []
       self.recurse(self.node)
@@ -297,6 +323,11 @@ class BlockLayout:
 
     for child in self.children:
       child.layout()
+
+    if mode == "block":
+      self.height = sum([child.height for child in self.children])
+    else:
+      self.height = self.cursor_y
 
   def word(self, word):
     font = get_font(self.size, self.weight, self.style)
@@ -339,6 +370,18 @@ class BlockLayout:
       self.children.append(next)
       previous = next 
 
+  ## 인라인 모드일 때 DrawText 객체 추가
+  def paint(self):
+    cmds = []
+    if isinstance(self.node, Element) and self.node.tag == "pre":
+      x2, y2 = self.x + self.width, self.y + self.height
+      rect = DrawRect(self.x, self.y, x2, y2, "gray")
+      cmds.append(rect)
+    if self.layout_mode() == "inline":
+      for x, y, word, font in self.display_list:
+        cmds.append(DrawText(x, y, word, font))
+    return cmds
+
   def flush(self):
     # 기준선을 따라 단어들을 정렬
     if not self.line: return
@@ -351,7 +394,6 @@ class BlockLayout:
       y = self.y + baseline - font.metrics("ascent")
       self.display_list.append((x, y, word, font))
     max_descent = max([metric["descent"] for metric in metrics])
-    # cursor_x와 cursor_y 필드를 업데이트 
     self.cursor_y = baseline + 1.25 * max_descent
     self.cursor_x = 0
     self.line = []
@@ -381,9 +423,6 @@ class BlockLayout:
       self.flush()
       self.cursor_y += VSTEP
 
-  def paint(self):
-    return self.display_list
-
 class Browser:
   def __init__(self):
     self.window = tkinter.Tk()
@@ -398,26 +437,28 @@ class Browser:
 
     self.display_list = []
 
-  # 저장된 위치를 기반으로 각 문자를 그림 - 화면 좌표만 고려
-  def draw(self):
-    self.canvas.delete("all")
-    for x, y, word, font in self.display_list:
-      if y > self.scroll + HEIGHT: continue # 창의 아래문자 건너뛰기
-      if y + VSTEP < self.scroll: continue # 창의 위의 문자 건너뛰기
-      self.canvas.create_text(x, y-self.scroll, text=word, font=font, anchor="nw")
-
   # 웹페이지 로드
   def load(self, url):
     body = url.request()
     self.nodes = HTMLParser(body).parse()
-    self.documnet = DocumentLayout(self.nodes) # 레이아웃 객체 생성
-    self.documnet.layout() # 레이아웃 수행 
-    paint_tree(self.documnet, self.display_list)
+    self.document = DocumentLayout(self.nodes) # 레이아웃 객체 생성
+    self.document.layout() # 레이아웃 수행 
+    self.display_list = []
+    paint_tree(self.document, self.display_list)
     self.draw()
+
+  # 저장된 위치를 기반으로 각 문자를 그림 - 화면 좌표만 고려
+  def draw(self):
+    self.canvas.delete("all")
+    for cmd in self.display_list:
+      if cmd.top > self.scroll + HEIGHT: continue
+      if cmd.bottom < self.scroll: continue
+      cmd.execute(self.scroll, self.canvas)
 
   # 스크롤 
   def scrolldown(self, e):
-    self.scroll += SCROLL_STEP
+    max_y = max(self.document.height + 2*VSTEP - HEIGHT, 0)
+    self.scroll = min(self.scroll + SCROLL_STEP, max_y)
     self.draw()
 
 # load 함수 실행
